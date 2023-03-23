@@ -31,6 +31,12 @@ import zipfile
 import warnings
 import argparse
 
+from sentence_transformers import SentenceTransformer, util
+
+import ipywidgets as widgets
+from IPython.display import display
+from ipywidgets import Layout, Box, Label
+
 from openpyxl import load_workbook
 from openpyxl import Workbook
 from openpyxl.comments import Comment
@@ -38,6 +44,228 @@ from openpyxl.styles import colors
 from openpyxl.styles import Font, Color
 from openpyxl.utils import units
 from openpyxl.styles import Border, Side, PatternFill, GradientFill, Alignment
+
+
+def load_sentence_model():
+    logger.info(f"MultyLangual model dounlowd - start...")
+    model = SentenceTransformer('multi-qa-MiniLM-L6-cos-v1')
+    # model = SentenceTransformer('all-MiniLM-L6-v2') # хуже - да эмбеддинге-то старые
+    logger.info(f"MultyLangual model dounlowd - done!")
+    return model
+
+
+def get_serv_code_name(
+        dict_id_score_lst, df_dict_services, 
+        dict_code_col_name = 'code', dict_name_col_name = 'name', 
+        similarity_threshold=0.9, max_sim_entries=2, max_out_entries=2, 
+        debug=False):
+    rez= np.array(3*[None])
+    if ( (type(dict_id_score_lst)==list) and (len(dict_id_score_lst)>0) and 
+        (type(dict_id_score_lst[0])==list) and (len(dict_id_score_lst[0]) > 0) ):
+        for i_d, dict_id_score in enumerate(dict_id_score_lst[0]):
+            if debug: print("get_code_name: dict_score_id", dict_id_score)
+            id, score = dict_id_score.values()
+            if debug: print(f"get_code_name: score: {score}, id : {id}")
+            if float(score) >= similarity_threshold:
+                rez_by_dict_el = df_dict_services.loc[id, [dict_code_col_name, dict_name_col_name]].values
+                # print(rez_by_dict_el.shape, rez_by_dict_el)
+                if len(rez_by_dict_el.shape) >1:
+                    try:
+                        rez_by_dict_el = np.insert(rez_by_dict_el, 0, values=round(float(score)*100,1), axis=1)
+                    except:
+                        rez_by_dict_el = np.insert(rez_by_dict_el, 0, values=round(float(score)*100,1))    
+                else:
+                    rez_by_dict_el = np.insert(rez_by_dict_el, 0, values=round(float(score)*100,1))
+                if i_d == 0:
+                    rez = rez_by_dict_el
+                else:
+                    rez = np.vstack((rez,rez_by_dict_el))
+            else: break
+        return rez
+    else: 
+        return np.array([3*[None]])
+
+def semantic_search_serv_by_df (
+              df_test_serv, col_name_check, 
+              df_dict_services, serv_name_embeddings, 
+              model,  
+              similarity_threshold=0.9, max_sim_entries=2, max_out_entries=2, 
+              n_rows=np.inf,
+              debug=False):
+
+    cols_tmplt = ['%', 'code', 'name']
+    new_cols_semantic = [ [f"{cols_tmplt[0]}_{il+1:02d}", f"{cols_tmplt[1]}_{il+1:02d}", f"{cols_tmplt[2]}_{il+1:02d}"] for il, lst in enumerate(range(max_out_entries))]
+    new_cols_semantic = list(itertools.chain.from_iterable(new_cols_semantic))
+    df_test_serv[new_cols_semantic] = None
+
+    max_new_cols = max_out_entries * 3
+    empty_values_row = np.array(max_new_cols * [None])
+    for i_row, row in tqdm(df_test_serv.iterrows(), total = df_test_serv.shape[0]):
+    
+        if i_row > n_rows: break
+
+        s = row[col_name_check]
+        s_embedding = model.encode(s) 
+        dict_id_score_lst = util.semantic_search (s_embedding, serv_name_embeddings, top_k = max_sim_entries)
+        values = get_serv_code_name(
+                    dict_id_score_lst, df_dict_services,
+                    similarity_threshold=similarity_threshold, max_sim_entries=max_sim_entries, max_out_entries=max_out_entries, debug=debug) 
+        if len(values)>0:
+            if len(values.shape)> 1: # any rows
+                values = list(itertools.chain.from_iterable(values))
+            else: values = list(values)
+            len_values = len(values)
+            if len_values < max_new_cols:
+                values = values + (max_new_cols - len_values) * [None]
+            elif len_values > max_new_cols:
+                values = values[:max_new_cols]
+            try:
+                df_test_serv.loc[i_row, new_cols_semantic] = values
+                
+            except Exception as err:
+                if debug: 
+                    print()
+                    print("\nsemantic_search:", i_row, s)
+                    print("semantic_search:", err, values.shape, values)
+                    # print("semantic_search:", err, values.shape, values)
+        
+        else: 
+            df_test_serv.loc[i_row, new_cols_semantic] = empty_values_row
+            
+    return df_test_serv
+
+def format_excel_sheet_cols(data_processed_dir, fn_xls, format_cols, sheet_name):
+    wb = load_workbook(os.path.join(data_processed_dir, fn_xls))
+    # ws = wb.active
+    ws = wb[sheet_name]
+    # l_alignment=Alignment(horizontal='left', vertical= 'top', text_rotation=0, wrap_text=True, shrink_to_fit=False, indent=0)
+    l_alignment=Alignment(horizontal='left', vertical= 'top', text_rotation=0, wrap_text=False, shrink_to_fit=False, indent=0)
+    r_alignment=Alignment(horizontal='right', vertical= 'top', text_rotation=0, wrap_text=True, shrink_to_fit=False, indent=0)
+    border = Border( 
+        left=Side(border_style="thin", color='FF000000'),
+        right=Side(border_style="thin", color='FF000000'),
+        top=Side(border_style="thin", color='FF000000'),
+        bottom=Side(border_style="thin", color='FF000000'),
+     )
+    
+    
+    # ws.filterMode = True
+    last_cell = ws.cell(row=1, column=len(format_cols)) 
+    full_range = "A1:" + last_cell.column_letter + str(ws.max_row)
+    ws.auto_filter.ref = full_range
+    ws.freeze_panes = ws['B2']
+    for ic, col_width in enumerate(format_cols):
+        cell = ws.cell(row=1, column=ic+1)
+        cell.alignment = l_alignment
+        ws.column_dimensions[cell.column_letter].width = col_width
+    # ft = cell.font
+    # ft = Font(bold=False)
+    # for row in ws[full_range]: #[1:]
+    #     for cell in row:
+    #         cell.font = ft    
+    #         cell.alignment = l_alignment
+    #         cell.border = border
+    wb.save(os.path.join(data_processed_dir, fn_xls))
+
+def get_cols_width_exists(ws):
+    cols_width_exists = []
+    ws.sheet_state, ws.max_row, ws.max_column
+    for ic in range(ws.max_column):
+        cell = ws.cell(row=1, column=ic+1)
+        cols_width_exists.append(ws.column_dimensions[cell.column_letter].width)
+    return cols_width_exists
+def format_ws_excel_cols(ws, cols_width):
+    l_alignment=Alignment(horizontal='left', vertical= 'top', text_rotation=0, wrap_text=True, shrink_to_fit=False, indent=0)
+    r_alignment=Alignment(horizontal='right', vertical= 'top', text_rotation=0, wrap_text=True, shrink_to_fit=False, indent=0)
+    # last_cell = ws.cell(row=1, column=len(cols_width)) 
+    # full_range = "A1:" + last_cell.column_letter + str(ws.max_row)
+    # ws.auto_filter.ref = full_range
+    ws.freeze_panes = ws['B2']
+    for ic, col_width in enumerate(cols_width):
+        cell = ws.cell(row=1, column=ic+1)
+        cell.alignment = l_alignment
+        ws.column_dimensions[cell.column_letter].width = col_width
+    
+    return ws  
+
+
+def rewrite_excel_by_df(
+    df_test_serv,
+    data_source_dir, data_processed_dir,
+    fn_check_file, sheet_name,
+    max_sim_entries,
+      ):
+    wb = load_workbook(os.path.join(data_source_dir, fn_check_file))
+    ws = wb[sheet_name]
+    cols_width_exists  = get_cols_width_exists(ws)
+    # print(cols_width_exists)
+    cols_width_new = cols_width_exists
+    for _ in range(max_sim_entries):
+        cols_width_new += [10., 15., 40.]
+    # print(cols_width_new)
+
+    offset = datetime.timezone(datetime.timedelta(hours=3))
+    dt = datetime.datetime.now(offset)
+    str_date = dt.strftime("%Y_%m_%d_%H%M")
+    fn_save = f"{fn_check_file[:fn_check_file.rfind('.')]}_{str_date}.{fn_check_file.split('.')[-1]}"
+    # print(fn_save)
+    wb.save(os.path.join(data_processed_dir, fn_save))
+
+    with pd.ExcelWriter(os.path.join(data_processed_dir, fn_save), mode='a', if_sheet_exists='new') as writer: #  engine='openpyxl', 
+        # Engine to use for writing. If None, defaults to io.excel.<extension>.writer. NOTE: can only be passed as a keyword argument.
+        # Deprecated since version 1.2.0: As the xlwt package is no longer maintained, the xlwt engine will be removed in a future version of pandas.
+        # if_sheet_exists{‘error’, ‘new’, ‘replace’, ‘overlay’}, default ‘error’
+        df_test_serv.to_excel(writer, sheet_name=f"{sheet_name}_STS", index=False) 
+        # работает с Pandas 1.4.1 fail pandas 1.4.4
+
+    format_excel_sheet_cols(data_processed_dir, fn_save, cols_width_new, f"{sheet_name}_STS")
+
+    return fn_save
+
+
+def semantic_search_serv(
+    df_services_804n, serv_name_embeddings,
+    fn_check_file_drop_douwn, sheet_name_drop_douwn, col_name_drop_douwn, 
+    similarity_threshold_slider, max_entries_slider, max_out_values_slider,
+    data_source_dir, data_processed_dir,
+    n_rows=np.inf,
+    debug=False
+    ):
+    fn_check_file, sheet_name, col_name_check = fn_check_file_drop_douwn.value, sheet_name_drop_douwn.value, col_name_drop_douwn.value
+    similarity_threshold, max_sim_entries, max_out_entries = similarity_threshold_slider.value/100, max_entries_slider.value, max_out_values_slider.value
+
+    if fn_check_file is not None and sheet_name is not None and col_name_check is not None:
+        try:
+            df_test_serv = pd.read_excel(os.path.join(data_source_dir, fn_check_file), sheet_name = sheet_name)
+            display(df_test_serv.head(2))
+        except Exception as err:
+            df_test_serv = None
+            print(str(err))
+            print("Укажите в форме выбора парметров корректные значения: файл, лист и колонку для семантического поиска")
+            sys.exit(2)
+    else:
+        print("Укажите в форме выбора парметров: файл, лист и колонку для семантического поиска")
+    
+    model = load_sentence_model()
+
+    df_test_serv = semantic_search_serv_by_df (
+              df_test_serv, col_name_check, 
+              df_services_804n, serv_name_embeddings, 
+              model,  
+              similarity_threshold=similarity_threshold, max_sim_entries=max_sim_entries, max_out_entries=max_out_entries, 
+              n_rows=n_rows,
+              debug=False)
+    display(df_test_serv.head(2))
+
+    logger.info(f"Начато дополнение и форматирование выходного файла...")
+    fn_save = rewrite_excel_by_df(    df_test_serv,     data_source_dir, data_processed_dir,
+                            fn_check_file, sheet_name,
+                            max_sim_entries,
+                        )
+    logger.info(f"Файл '{fn_save}' сохранен в директорию '{data_processed_dir}'")
+    
+    return df_test_serv, fn_save
+
 class Logger():
     def __init__(self, name = 'Fuzzy Lookup',
                  strfmt = '[%(asctime)s] [%(levelname)s] > %(message)s', # strfmt = '[%(asctime)s] [%(name)s] [%(levelname)s] > %(message)s'
@@ -292,3 +520,52 @@ def np_unique_nan(lst: np.array, debug = False)->np.array: # a la version 2.4
     if debug: print(f"np_unique_nan: return: type(lst_unique): {type(lst_unique)}")
     return lst_unique
 
+
+def form_serv_param(fn_list):
+    fn_check_file_drop_douwn = widgets.Dropdown( options=fn_list, value=None) #fn_list[0] if len(fn_list) > 0 else None, disabled=False)
+    sheet_name_drop_douwn = widgets.Dropdown( options= [None], value= None, disabled=False)
+    col_name_drop_douwn = widgets.Dropdown( options= [None], value= None, disabled=False)
+    # fn_dict_file_drop_douwn = widgets.Dropdown( options= [None] + fn_list, value= None, disabled=False, )
+    # radio_btn_big_dict = widgets.RadioButtons(options=['Да', 'Нет'], value= 'Да', disabled=False) # description='Check me',    , indent=False
+    # radio_btn_prod_options = widgets.RadioButtons(options=['Да', 'Нет'], value= 'Нет', disabled=False if radio_btn_big_dict.value=='Да' else True )
+    similarity_threshold_slider = widgets.IntSlider(min=1,max=100, value=90)
+    max_entries_slider = widgets.IntSlider(min=1,max=5, value=4)
+    max_out_values_slider = widgets.IntSlider(min=1,max=10, value=4)
+
+    form_item_layout = Layout(display='flex', flex_flow='row', justify_content='space-between')
+    check_box = Box([Label(value='Проверяемый файл:'), fn_check_file_drop_douwn], layout=form_item_layout) 
+    sheet_box = Box([Label(value='Имя листа:'), sheet_name_drop_douwn], layout=form_item_layout) 
+    column_box = Box([Label(value='Заголовок колонки:'), col_name_drop_douwn], layout=form_item_layout) 
+    # big_dict_box = Box([Label(value='Использовать большие справочники:'), radio_btn_big_dict], layout=form_item_layout) 
+    # prod_options_box = Box([Label(value='Искать в Вариантах исполнения (+10 мин):'), radio_btn_prod_options], layout=form_item_layout) 
+    similarity_threshold_box = Box([Label(value='Минимальный % сходства позиций:'), similarity_threshold_slider], layout=form_item_layout) 
+    max_entries_box = Box([Label(value='Максимальное кол-во найденных позиций:'), max_entries_slider], layout=form_item_layout) 
+    max_out_values_box = Box([Label(value='Максимальное кол-во выводимых позиций:'), max_out_values_slider], layout=form_item_layout) 
+    
+    # form_items = [check_box, dict_box, big_dict_box, prod_options_box, similarity_threshold_box, max_entries_box]
+    form_items = [check_box, sheet_box, column_box, similarity_threshold_box, max_entries_box, max_out_values_box]
+    
+    form = Box(form_items, layout=Layout(display='flex', flex_flow= 'column', border='solid 2px', align_items='stretch', width='50%')) #width='auto'))
+    # return form, fn_check_file_drop_douwn, fn_dict_file_drop_douwn, radio_btn_big_dict, radio_btn_prod_options, similarity_threshold_slider, max_entries_slider
+    return form, fn_check_file_drop_douwn, sheet_name_drop_douwn, col_name_drop_douwn, similarity_threshold_slider, max_entries_slider, max_out_values_slider
+    # form = Box(form_items, layout=Layout(display='flex', flex_flow= 'column', border='solid 2px', align_items='stretch', width='70%')) #width='auto'))
+
+def on_fn_check_file_drop_douwn_change(change):
+    global sheet_name_drop_douwn, data_source_dir
+    # print(change.new)
+    xl = pd.ExcelFile(os.path.join(data_source_dir, change.new))
+    # xl = pd.ExcelFile(os.path.join('/content/data/source', change.new))
+    sheet_lst = list(xl.sheet_names)
+    # print(sheet_lst)
+    sheet_name_drop_douwn.options = sheet_lst
+    sheet_lst_serv = [sheet for sheet in sheet_lst if 'услуг' in sheet.lower()]
+    sheet_name_drop_douwn.value = sheet_lst_serv[0] if len(sheet_lst_serv)>0 else sheet_lst[0]
+def on_sheet_name_drop_douwn_change(change):
+    global col_name_drop_douwn, data_source_dir, fn_check_file_drop_douwn
+    df = pd.read_excel(os.path.join(data_source_dir, fn_check_file_drop_douwn.value), sheet_name = change.new)
+    # df = pd.read_excel(os.path.join('/content/data/source', fn_check_file_drop_douwn.value), sheet_name = change.new)
+    columns_lst = list(df.columns)
+    col_name_drop_douwn.options = columns_lst
+    columns_lst_serv_name = [col for col in columns_lst if ('наименован' in col.lower() and 'услуг' in col.lower())]
+    columns_lst_serv = [col for col in columns_lst if 'услуг' in col.lower()]
+    col_name_drop_douwn.value = columns_lst_serv_name[0] if len(columns_lst_serv_name)>0 else (columns_lst_serv[0] if len(columns_lst_serv)>0 else columns_lst[0])
