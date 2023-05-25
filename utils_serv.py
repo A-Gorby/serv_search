@@ -105,31 +105,38 @@ def semantic_search_serv_by_df (
         if i_row > n_rows: break
 
         s = row[col_name_check]
-        s_embedding = model.encode(s) 
-        dict_id_score_lst = util.semantic_search (s_embedding, serv_name_embeddings, top_k = max_sim_entries)
-        values = get_serv_code_name(
-                    dict_id_score_lst, df_dict_services,
-                    similarity_threshold=similarity_threshold, max_sim_entries=max_sim_entries, max_out_entries=max_out_entries, debug=debug) 
-        if len(values)>0:
-            if len(values.shape)> 1: # any rows
-                values = list(itertools.chain.from_iterable(values))
-            else: values = list(values)
-            len_values = len(values)
-            if len_values < max_new_cols:
-                values = values + (max_new_cols - len_values) * [None]
-            elif len_values > max_new_cols:
-                values = values[:max_new_cols]
-            try:
-                df_test_serv.loc[i_row, new_cols_semantic] = values
-                
-            except Exception as err:
-                if debug: 
-                    print()
-                    print("\nsemantic_search:", i_row, s)
-                    print("semantic_search:", err, values.shape, values)
-                    # print("semantic_search:", err, values.shape, values)
-        
-        else: 
+        # id (type(s)==str): # and (len(str) > 0):
+        try:
+            s_embedding = model.encode(s) 
+            dict_id_score_lst = util.semantic_search (s_embedding, serv_name_embeddings, top_k = max_sim_entries)
+            values = get_serv_code_name(
+                        dict_id_score_lst, df_dict_services,
+                        similarity_threshold=similarity_threshold, max_sim_entries=max_sim_entries, max_out_entries=max_out_entries, debug=debug) 
+            if len(values)>0:
+                if len(values.shape)> 1: # any rows
+                    values = list(itertools.chain.from_iterable(values))
+                else: values = list(values)
+                len_values = len(values)
+                if len_values < max_new_cols:
+                    values = values + (max_new_cols - len_values) * [None]
+                elif len_values > max_new_cols:
+                    values = values[:max_new_cols]
+                try:
+                    df_test_serv.loc[i_row, new_cols_semantic] = values
+                    
+                except Exception as err:
+                    if debug: 
+                        print()
+                        print("\nsemantic_search:", i_row, s)
+                        print("semantic_search:", err, values.shape, values)
+                        # print("semantic_search:", err, values.shape, values)
+            
+            else: 
+                df_test_serv.loc[i_row, new_cols_semantic] = empty_values_row
+        except Exception as err: 
+            print()
+            print(err)
+            print("semantic_search:", i_row, s)
             df_test_serv.loc[i_row, new_cols_semantic] = empty_values_row
             
     return df_test_serv
